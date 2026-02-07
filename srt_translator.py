@@ -167,7 +167,7 @@ class OpenAITranslationService(TranslationService):
             "Authorization": f"Bearer {self.api_key}",
         }
 
-        prompt = f"You are a professional translator. Translate from {source_lang} to {target_lang}. Preserve the meaning and tone. Return only the translation without any explanations."
+        prompt = f"You are a professional translator. Translate from {source_lang} to {target_lang}. Preserve the meaning and tone and only return the translated text, nothing else.\n\nText: {text}"
 
         payload = {
             "model": self.model,
