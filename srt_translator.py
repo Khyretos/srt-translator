@@ -10,14 +10,16 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
+from threading import Event, Thread
 from typing import Dict, List, Optional, Tuple
 
 import gradio as gr
+import pandas as pd
 import requests
 
 
 class Logger:
-    """Pretty logger for translation process"""
+    """Pretty logger for translation process with streaming support"""
 
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
@@ -144,8 +146,10 @@ class TranslationService:
     def __init__(self, logger: Logger):
         self.logger = logger
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
-        """Translate text from source to target language"""
+    def translate(
+        self, text: str, source_lang: str, target_lang: str, max_retries: int = 5
+    ) -> str:
+        """Translate text from source to target language with retry logic"""
         raise NotImplementedError
 
 
@@ -158,8 +162,10 @@ class OpenAITranslationService(TranslationService):
         self.api_key = api_key
         self.model = model
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
-        """Translate using OpenAI-compatible API"""
+    def translate(
+        self, text: str, source_lang: str, target_lang: str, max_retries: int = 5
+    ) -> str:
+        """Translate using OpenAI-compatible API with retry logic"""
         self.logger.debug(f"   🤖 Translating with AI: {self.model}")
 
         headers = {
@@ -174,23 +180,43 @@ class OpenAITranslationService(TranslationService):
             "messages": [{"role": "user", "content": prompt}],
         }
 
-        try:
-            response = requests.post(
-                f"{self.host}/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
-            response.raise_for_status()
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    f"{self.host}/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=120,
+                )
+                response.raise_for_status()
 
-            result = response.json()
-            translated = result["choices"][0]["message"]["content"].strip()
-            self.logger.debug(f"   ✓ Translation received")
-            return translated
+                result = response.json()
+                translated = result["choices"][0]["message"]["content"].strip()
+                self.logger.debug(f"   ✓ Translation received")
+                return translated
 
-        except Exception as e:
-            self.logger.error(f"   ❌ AI translation failed: {e}")
-            raise
+            except requests.exceptions.Timeout:
+                self.logger.warning(
+                    f"   ⚠️  Timeout on attempt {attempt + 1}/{max_retries}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                else:
+                    raise
+
+            except Exception as e:
+                self.logger.warning(
+                    f"   ⚠️  Error on attempt {attempt + 1}/{max_retries}: {e}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                else:
+                    self.logger.error(
+                        f"   ❌ AI translation failed after {max_retries} attempts"
+                    )
+                    raise
 
 
 class LibreTranslateService(TranslationService):
@@ -201,8 +227,10 @@ class LibreTranslateService(TranslationService):
         self.host = host.rstrip("/")
         self.api_key = api_key
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
-        """Translate using LibreTranslate"""
+    def translate(
+        self, text: str, source_lang: str, target_lang: str, max_retries: int = 5
+    ) -> str:
+        """Translate using LibreTranslate with retry logic"""
         self.logger.debug(f"   🌐 Translating with LibreTranslate")
 
         payload = {
@@ -215,18 +243,40 @@ class LibreTranslateService(TranslationService):
         if self.api_key:
             payload["api_key"] = self.api_key
 
-        try:
-            response = requests.post(f"{self.host}/translate", json=payload, timeout=60)
-            response.raise_for_status()
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    f"{self.host}/translate", json=payload, timeout=120
+                )
+                response.raise_for_status()
 
-            result = response.json()
-            translated = result["translatedText"]
-            self.logger.debug(f"   ✓ Translation received")
-            return translated
+                result = response.json()
+                translated = result["translatedText"]
+                self.logger.debug(f"   ✓ Translation received")
+                return translated
 
-        except Exception as e:
-            self.logger.error(f"   ❌ LibreTranslate failed: {e}")
-            raise
+            except requests.exceptions.Timeout:
+                self.logger.warning(
+                    f"   ⚠️  Timeout on attempt {attempt + 1}/{max_retries}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                else:
+                    raise
+
+            except Exception as e:
+                self.logger.warning(
+                    f"   ⚠️  Error on attempt {attempt + 1}/{max_retries}: {e}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                else:
+                    self.logger.error(
+                        f"   ❌ LibreTranslate failed after {max_retries} attempts"
+                    )
+                    raise
 
 
 class GoogleTranslateService(TranslationService):
@@ -237,8 +287,10 @@ class GoogleTranslateService(TranslationService):
         self.api_key = api_key
         self.endpoint = "https://translation.googleapis.com/language/translate/v2"
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
-        """Translate using Google Translate API"""
+    def translate(
+        self, text: str, source_lang: str, target_lang: str, max_retries: int = 5
+    ) -> str:
+        """Translate using Google Translate API with retry logic"""
         self.logger.debug(f"   🌍 Translating with Google Translate")
 
         params = {
@@ -249,18 +301,38 @@ class GoogleTranslateService(TranslationService):
             "format": "text",
         }
 
-        try:
-            response = requests.post(self.endpoint, params=params, timeout=60)
-            response.raise_for_status()
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(self.endpoint, params=params, timeout=120)
+                response.raise_for_status()
 
-            result = response.json()
-            translated = result["data"]["translations"][0]["translatedText"]
-            self.logger.debug(f"   ✓ Translation received")
-            return translated
+                result = response.json()
+                translated = result["data"]["translations"][0]["translatedText"]
+                self.logger.debug(f"   ✓ Translation received")
+                return translated
 
-        except Exception as e:
-            self.logger.error(f"   ❌ Google Translate failed: {e}")
-            raise
+            except requests.exceptions.Timeout:
+                self.logger.warning(
+                    f"   ⚠️  Timeout on attempt {attempt + 1}/{max_retries}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                else:
+                    raise
+
+            except Exception as e:
+                self.logger.warning(
+                    f"   ⚠️  Error on attempt {attempt + 1}/{max_retries}: {e}"
+                )
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                else:
+                    self.logger.error(
+                        f"   ❌ Google Translate failed after {max_retries} attempts"
+                    )
+                    raise
 
 
 class SRTTranslator:
@@ -272,8 +344,10 @@ class SRTTranslator:
         self.source_entries: List[SRTEntry] = []
         self.temp_source_file: Optional[str] = None
         self.temp_target_file: Optional[str] = None
+        self.stop_event = Event()
+        self.current_index = 0
 
-    def load_srt(self, file_path: str) -> Tuple[List[Dict], str]:
+    def load_srt(self, file_path: str) -> Tuple[pd.DataFrame, str]:
         """Load and parse SRT file"""
         self.logger.clear()
         self.logger.info("=" * 60)
@@ -293,14 +367,50 @@ class SRTTranslator:
                 self.source_entries, str(self.temp_source_file), self.logger
             )
 
-            # Convert to dict for UI
-            entries_dict = [entry.to_dict() for entry in self.source_entries]
+            # Convert to DataFrame
+            df = pd.DataFrame(
+                [
+                    [e.sequence, e.timecode, e.text, e.translated_text]
+                    for e in self.source_entries
+                ],
+                columns=["Seq", "Timecode", "Text", "Translated"],
+            )
 
-            return entries_dict, self.logger.get_logs()
+            return df, self.logger.get_logs()
 
         except Exception as e:
             self.logger.error(f"❌ Failed to load SRT file: {e}")
-            return [], self.logger.get_logs()
+            return pd.DataFrame(
+                columns=["Seq", "Timecode", "Text", "Translated"]
+            ), self.logger.get_logs()
+
+    def sync_from_dataframe(self, dataframe_data):
+        """Sync entries from dataframe - called automatically on any table change"""
+        # Handle both DataFrame and list inputs
+        if isinstance(dataframe_data, pd.DataFrame):
+            if dataframe_data.empty:
+                return
+            data = dataframe_data.values.tolist()
+        else:
+            data = dataframe_data
+
+        if not data:
+            return
+
+        # Rebuild entries with automatic renumbering
+        new_entries = []
+        for idx, row in enumerate(data, 1):
+            if len(row) >= 3:
+                # row format: [sequence, timecode, text, translated_text]
+                timecode = str(row[1]) if row[1] else "00:00:00,000 --> 00:00:00,000"
+                text = str(row[2]) if row[2] else ""
+                entry = SRTEntry(idx, timecode, text)
+                if len(row) >= 4 and row[3]:
+                    entry.translated_text = str(row[3])
+                new_entries.append(entry)
+
+        self.source_entries = new_entries
+        self.logger.info(f"✅ Synced {len(new_entries)} entries from table")
 
     def create_translation_service(
         self,
@@ -334,15 +444,50 @@ class SRTTranslator:
 
         return None
 
-    def translate_entries(
+    def stop_translation(self):
+        """Stop the translation process"""
+        self.stop_event.set()
+        self.logger.warning("⏹️  Translation stopped by user")
+        app.get
+
+    def translate_single_entry(
+        self,
+        service: TranslationService,
+        entry_index: int,
+        source_lang: str,
+        target_lang: str,
+    ) -> Tuple[str, str]:
+        """Translate a single entry"""
+        try:
+            if entry_index >= len(self.source_entries):
+                self.logger.error(f"❌ Invalid entry index: {entry_index}")
+                return "", self.logger.get_logs()
+
+            entry = self.source_entries[entry_index - 1]
+            self.logger.info(f"🔄 Translating entry #{entry.sequence}")
+            self.logger.debug(f"   Source: {entry.text[:50]}...")
+
+            translated = service.translate(entry.text, source_lang, target_lang)
+            entry.translated_text = translated
+
+            self.logger.debug(f"   Target: {translated[:50]}...")
+            self.logger.info(f"✅ Entry #{entry.sequence} translated")
+
+            return translated, self.logger.get_logs()
+
+        except Exception as e:
+            self.logger.error(f"❌ Translation failed: {e}")
+            return "", self.logger.get_logs()
+
+    def translate_all_entries(
         self,
         service: TranslationService,
         source_lang: str,
         target_lang: str,
-        translate_all: bool = True,
-        entry_index: Optional[int] = None,
-    ) -> Tuple[List[Dict], str]:
-        """Translate subtitle entries"""
+        start_index: int = 0,
+        progress=gr.Progress(),
+    ) -> Tuple[pd.DataFrame, str, int]:
+        """Translate all subtitle entries with pause/stop support and real-time updates"""
 
         self.logger.info("=" * 60)
         self.logger.info("🔄 Starting Translation")
@@ -350,37 +495,52 @@ class SRTTranslator:
         self.logger.info(f"📝 Source Language: {source_lang}")
         self.logger.info(f"📝 Target Language: {target_lang}")
 
+        self.stop_event.clear()
+        total = len(self.source_entries)
+
         try:
-            if translate_all:
-                total = len(self.source_entries)
-                self.logger.info(f"📊 Translating {total} entries...")
+            for idx in range(start_index, total):
+                # Check if stopped
+                if self.stop_event.is_set():
+                    self.logger.warning("⏹️  Translation stopped")
+                    self.current_index = idx
+                    break
 
-                for idx, entry in enumerate(self.source_entries, 1):
-                    self.logger.info(f"[{idx}/{total}] 🔄 Entry #{entry.sequence}")
-                    self.logger.debug(f"   Source: {entry.text[:50]}...")
+                entry = self.source_entries[idx]
 
+                # Update progress
+                progress((idx + 1) / total, desc=f"Translating entry {idx + 1}/{total}")
+
+                self.logger.info(f"[{idx + 1}/{total}] 🔄 Entry #{entry.sequence}")
+                self.logger.debug(f"   Source: {entry.text[:50]}...")
+
+                try:
                     translated = service.translate(entry.text, source_lang, target_lang)
                     entry.translated_text = translated
 
                     self.logger.debug(f"   Target: {translated[:50]}...")
-                    self.logger.info(f"[{idx}/{total}] ✅ Completed")
+                    self.logger.info(f"[{idx + 1}/{total}] ✅ Completed")
+                    # self.current_index = idx + 1
 
+                    # Yield intermediate results for streaming
+                    # yield (
+                    #     self._get_dataframe(True),
+                    #     self.logger.get_logs(),
+                    #     self.current_index,
+                    # )
+
+                except Exception as e:
+                    self.logger.error(f"[{idx + 1}/{total}] ❌ Failed: {e}")
+                    self.logger.warning(
+                        f"⚠️  Stopping at entry {idx + 1}. Already translated: {idx} entries"
+                    )
+                    self.current_index = idx
+                    break
+
+            if self.current_index >= total:
                 self.logger.info("=" * 60)
                 self.logger.info("🎉 Translation Complete!")
                 self.logger.info("=" * 60)
-
-            else:
-                if entry_index is None or entry_index >= len(self.source_entries):
-                    self.logger.error("❌ Invalid entry index")
-                    return [], self.logger.get_logs()
-
-                entry = self.source_entries[entry_index]
-                self.logger.info(f"🔄 Translating entry #{entry.sequence}")
-
-                translated = service.translate(entry.text, source_lang, target_lang)
-                entry.translated_text = translated
-
-                self.logger.info(f"✅ Entry #{entry.sequence} translated")
 
             # Save temporary target file
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -392,12 +552,24 @@ class SRTTranslator:
                 use_translated=True,
             )
 
-            entries_dict = [entry.to_dict() for entry in self.source_entries]
-            return entries_dict, self.logger.get_logs()
+            print("yielding final results")
+            yield self._get_dataframe(), self.logger.get_logs(), self.current_index
 
         except Exception as e:
             self.logger.error(f"❌ Translation failed: {e}")
-            return [], self.logger.get_logs()
+            yield self._get_dataframe(), self.logger.get_logs(), self.current_index
+
+    def _get_dataframe(self, isFromLoop: bool = False) -> pd.DataFrame:
+        """Get current entries as DataFrame"""
+        if isFromLoop:
+            return pd.DataFrame()
+        return pd.DataFrame(
+            [
+                [e.sequence, e.timecode, e.text, e.translated_text]
+                for e in self.source_entries
+            ],
+            columns=["Seq", "Timecode", "Text", "Translated"],
+        )
 
     def save_final_translation(self, filename: str = None) -> str:
         """Save final translated SRT file"""
@@ -445,12 +617,17 @@ def create_gradio_interface():
         "cs",
     ]
 
-    with gr.Blocks(title="SRT Translator", theme=gr.themes.Soft()) as app:
+    log_output: gr.Textbox
+
+    with gr.Blocks(title="SRT Translator") as app:
         gr.Markdown("# 🎬 SRT File Translator")
         gr.Markdown("Translate subtitle files using AI or translation services")
 
+        # State to track if translation is running
+        translation_state = gr.State({"running": False, "start_index": 0})
+
         with gr.Row():
-            # Left Column - Service Configuration
+            # Left Column - Service Configuration (25%)
             with gr.Column(scale=1):
                 gr.Markdown("### ⚙️ Translation Service")
 
@@ -467,7 +644,7 @@ def create_gradio_interface():
                 # AI Service Config
                 with gr.Group(visible=True) as ai_config:
                     ai_host = gr.Textbox(
-                        label="API Host", placeholder="http://localhost:11434"
+                        label="API Host", placeholder="http://localhost:11434/v1"
                     )
                     ai_key = gr.Textbox(
                         label="API Key", placeholder="sk-...", type="password"
@@ -490,13 +667,17 @@ def create_gradio_interface():
                     label="Enable Verbose Logging", value=False
                 )
 
-            # Middle Column - Source
-            with gr.Column(scale=1):
-                gr.Markdown("### 📥 Source File")
+            # Middle Column - Source (50%)
+            with gr.Column(scale=3):
+                gr.Markdown("### 📥 Source & Translation")
 
-                source_lang = gr.Dropdown(
-                    choices=languages, label="Source Language", value="en"
-                )
+                with gr.Row():
+                    source_lang = gr.Dropdown(
+                        choices=languages, label="Source Language", value="en", scale=1
+                    )
+                    target_lang = gr.Dropdown(
+                        choices=languages, label="Target Language", value="es", scale=1
+                    )
 
                 file_input = gr.File(
                     label="Upload SRT File", file_types=[".srt"], type="filepath"
@@ -505,40 +686,48 @@ def create_gradio_interface():
                 load_btn = gr.Button("Load File", variant="primary")
 
                 source_editor = gr.Dataframe(
-                    headers=["Seq", "Timecode", "Text"],
-                    label="Source Subtitles (Editable)",
+                    headers=["Seq", "Timecode", "Text", "Translated"],
+                    label="Subtitles (Editable - Sequences auto-update)",
                     interactive=True,
-                    wrap=True,
+                    col_count=(4, "fixed"),
+                    row_count=(10, "dynamic"),
+                    buttons=["fullscreen", "copy"],
                 )
 
-            # Right Column - Target
+                gr.Markdown(
+                    "ℹ️ *Add/remove rows directly. Sequences renumber automatically on any change.*"
+                )
+
+            # Right Column - Controls (25%)
             with gr.Column(scale=1):
-                gr.Markdown("### 📤 Translation")
+                gr.Markdown("### 📤 Translation Controls")
 
-                target_lang = gr.Dropdown(
-                    choices=languages, label="Target Language", value="es"
+                with gr.Row():
+                    translate_all_btn = gr.Button("🌍 Translate All", variant="primary")
+                    stop_btn = gr.Button("⏹️ Stop", variant="stop")
+
+                continue_btn = gr.Button("🔄 Continue from Stop", variant="secondary")
+
+                gr.Markdown("#### Individual Translation")
+                entry_index = gr.Number(label="Sequence #", value=1, precision=0)
+                translate_single_btn = gr.Button("🔄 Translate", variant="secondary")
+
+                gr.Markdown("---")
+                download_btn = gr.Button(
+                    "⬇️ Download Translation", variant="primary", size="lg"
                 )
-
-                translate_all_btn = gr.Button(
-                    "🌍 Translate All", variant="primary", size="lg"
-                )
-
-                target_editor = gr.Dataframe(
-                    headers=["Seq", "Timecode", "Translated Text"],
-                    label="Translated Subtitles (Editable)",
-                    interactive=True,
-                    wrap=True,
-                )
-
-                download_btn = gr.Button("⬇️ Download Translation", variant="secondary")
                 output_file = gr.File(label="Download")
 
-        # Bottom Row - Logs
         with gr.Row():
             with gr.Column():
                 gr.Markdown("### 📋 Process Logs")
                 log_output = gr.Textbox(
-                    label="Logs", lines=15, max_lines=20, interactive=False
+                    label="Logs",
+                    lines=12,
+                    max_lines=15,
+                    interactive=False,
+                    autoscroll=True,
+                    show_label=False,
                 )
 
         # Event Handlers
@@ -557,20 +746,31 @@ def create_gradio_interface():
 
         def load_file(file_path, verbose):
             if not file_path:
-                return None, None, "⚠️ Please select a file"
+                return (
+                    pd.DataFrame(columns=["Seq", "Timecode", "Text", "Translated"]),
+                    "⚠️ Please select a file",
+                    {"running": False, "start_index": 0},
+                )
 
             translator.logger.verbose = verbose
-            entries, logs = translator.load_srt(file_path)
+            df, logs = translator.load_srt(file_path)
 
-            # Format for display
-            source_data = [[e["sequence"], e["timecode"], e["text"]] for e in entries]
-
-            return source_data, None, logs
+            return df, logs, {"running": False, "start_index": 0}
 
         load_btn.click(
             load_file,
             inputs=[file_input, verbose_logging],
-            outputs=[source_editor, target_editor, log_output],
+            outputs=[source_editor, log_output, translation_state],
+        )
+
+        def on_dataframe_change(dataframe_data):
+            """Auto-sync when user edits the table"""
+            translator.sync_from_dataframe(dataframe_data)
+            # Return updated dataframe with renumbered sequences
+            return translator._get_dataframe()
+
+        source_editor.change(
+            on_dataframe_change, inputs=[source_editor], outputs=[source_editor]
         )
 
         def translate_all(
@@ -584,6 +784,8 @@ def create_gradio_interface():
             src_lang,
             tgt_lang,
             verbose,
+            state,
+            progress=gr.Progress(),
         ):
             translator.logger.verbose = verbose
 
@@ -592,18 +794,28 @@ def create_gradio_interface():
             )
 
             if not service_obj:
-                return None, translator.logger.get_logs()
+                return (
+                    translator._get_dataframe(),
+                    "",
+                    translator.logger.get_logs(),
+                    {"running": False, "start_index": 0},
+                )
 
-            entries, logs = translator.translate_entries(
-                service_obj, src_lang, tgt_lang, translate_all=True
-            )
+            start_idx = state.get("start_index", 0)
 
-            # Format for display
-            target_data = [
-                [e["sequence"], e["timecode"], e["translated_text"]] for e in entries
-            ]
-
-            return target_data, logs
+            # Use generator for streaming updates
+            for df, logs, current_idx in translator.translate_all_entries(
+                service_obj,
+                src_lang,
+                tgt_lang,
+                start_index=start_idx,
+                progress=progress,
+            ):
+                yield (
+                    df,
+                    logs,
+                    {"running": False, "start_index": current_idx},
+                )
 
         translate_all_btn.click(
             translate_all,
@@ -618,8 +830,123 @@ def create_gradio_interface():
                 source_lang,
                 target_lang,
                 verbose_logging,
+                translation_state,
             ],
-            outputs=[target_editor, log_output],
+            outputs=[source_editor, log_output, translation_state],
+            show_progress="full",
+            show_progress_on=[source_editor],
+        )
+
+        def stop_translation():
+            translator.stop_translation()
+            return translator.logger.get_logs()
+
+        stop_btn.click(stop_translation, outputs=[log_output])
+
+        def continue_translation(
+            service,
+            ai_h,
+            ai_k,
+            ai_m,
+            libre_h,
+            libre_k,
+            google_k,
+            src_lang,
+            tgt_lang,
+            verbose,
+            state,
+            progress=gr.Progress(),
+        ):
+            translator.logger.verbose = verbose
+
+            service_obj = translator.create_translation_service(
+                service, ai_h, ai_k, ai_m, libre_h, libre_k, google_k
+            )
+
+            if not service_obj:
+                return (
+                    translator._get_dataframe(),
+                    "",
+                    translator.logger.get_logs(),
+                    state,
+                )
+
+            # Continue from where we stopped with streaming
+            for df, logs, current_idx in translator.translate_all_entries(
+                service_obj,
+                src_lang,
+                tgt_lang,
+                start_index=translator.current_index,
+                progress=progress,
+            ):
+                yield (
+                    df,
+                    logs,
+                    {"running": False, "start_index": current_idx},
+                )
+
+        continue_btn.click(
+            continue_translation,
+            inputs=[
+                service_type,
+                ai_host,
+                ai_key,
+                ai_model,
+                libre_host,
+                libre_key,
+                google_key,
+                source_lang,
+                target_lang,
+                verbose_logging,
+                translation_state,
+            ],
+            outputs=[source_editor, log_output, translation_state],
+        )
+
+        def translate_single(
+            service,
+            ai_h,
+            ai_k,
+            ai_m,
+            libre_h,
+            libre_k,
+            google_k,
+            src_lang,
+            tgt_lang,
+            verbose,
+            idx,
+        ):
+            translator.logger.verbose = verbose
+
+            service_obj = translator.create_translation_service(
+                service, ai_h, ai_k, ai_m, libre_h, libre_k, google_k
+            )
+
+            if not service_obj:
+                return translator._get_dataframe(), translator.logger.get_logs()
+
+            translated, logs = translator.translate_single_entry(
+                service_obj, int(idx), src_lang, tgt_lang
+            )
+
+            return translator._get_dataframe(), logs
+
+        translate_single_btn.click(
+            translate_single,
+            inputs=[
+                service_type,
+                ai_host,
+                ai_key,
+                ai_model,
+                libre_host,
+                libre_key,
+                google_key,
+                source_lang,
+                target_lang,
+                verbose_logging,
+                entry_index,
+            ],
+            outputs=[source_editor, log_output],
         )
 
         def save_translation():
@@ -633,4 +960,6 @@ def create_gradio_interface():
 
 if __name__ == "__main__":
     app = create_gradio_interface()
-    app.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    app.launch(
+        theme=gr.themes.Soft(), server_name="0.0.0.0", server_port=7860, share=False
+    )
