@@ -10,6 +10,8 @@ Edit subtitles directly in the table, resume interrupted translations, and monit
 
 ---
 
+![alt text](./images/image.png)
+
 ## ✨ Features
 
 - **Multiple Translation Services**
